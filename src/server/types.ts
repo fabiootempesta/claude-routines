@@ -28,13 +28,18 @@ export type CronSchedule = {
   expression: string;
 };
 
+export type ContinuousSchedule = {
+  type: "continuous";
+};
+
 export type TaskSchedule =
   | ManualSchedule
   | OnceSchedule
   | IntervalSchedule
   | DailySchedule
   | WeeklySchedule
-  | CronSchedule;
+  | CronSchedule
+  | ContinuousSchedule;
 
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max" | null;
 
@@ -46,6 +51,17 @@ export const claudeEffortOptions: Array<Exclude<ClaudeEffort, null>> = [
   "max"
 ];
 
+export type ClaudeModel = string | null;
+
+export const claudeModelOptions: Array<{ id: string; label: string }> = [
+  { id: "opus", label: "Opus 4.7" },
+  { id: "sonnet", label: "Sonnet 4.6" },
+  { id: "haiku", label: "Haiku 4.5" }
+];
+
+export const DEFAULT_CLAUDE_EFFORT: ClaudeEffort = "max";
+export const DEFAULT_CLAUDE_MODEL: ClaudeModel = "opus";
+
 export type Task = {
   id: string;
   title: string;
@@ -54,13 +70,14 @@ export type Task = {
   schedule: TaskSchedule;
   enabled: boolean;
   effort: ClaudeEffort;
+  model: ClaudeModel;
   nextRunAt: string | null;
   lastRunAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
-export type ExecutionStatus = "running" | "success" | "failed" | "stale";
+export type ExecutionStatus = "running" | "success" | "failed" | "stale" | "cancelled";
 
 export type ExecutionTrigger = "manual" | "scheduled" | "resume";
 
@@ -80,12 +97,14 @@ export type Execution = {
   cwd: string;
   prompt: string;
   effort: ClaudeEffort;
+  model: ClaudeModel;
   error: string | null;
   processId: number | null;
   sessionId: string;
   resumedFromExecutionId: string | null;
   staleAt: string | null;
   staleReason: string | null;
+  cancelRequestedAt: string | null;
 };
 
 export type DatabaseShape = {
@@ -100,6 +119,7 @@ export type CreateTaskInput = {
   schedule: TaskSchedule;
   enabled: boolean;
   effort: ClaudeEffort;
+  model: ClaudeModel;
 };
 
 export type UpdateTaskInput = Partial<CreateTaskInput>;

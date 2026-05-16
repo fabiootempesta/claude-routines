@@ -1,16 +1,20 @@
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { CANCEL_GRACE_MS, CONTINUOUS_MIN_GAP_MS } from "./constants.js";
 import { getNextRunAt } from "./schedules.js";
-import type {
-  ClaudeEffort,
-  CreateTaskInput,
-  DatabaseShape,
-  Execution,
-  ExecutionStatus,
-  ExecutionTrigger,
-  Task,
-  UpdateTaskInput
+import {
+  DEFAULT_CLAUDE_EFFORT,
+  DEFAULT_CLAUDE_MODEL,
+  type ClaudeEffort,
+  type ClaudeModel,
+  type CreateTaskInput,
+  type DatabaseShape,
+  type Execution,
+  type ExecutionStatus,
+  type ExecutionTrigger,
+  type Task,
+  type UpdateTaskInput
 } from "./types.js";
 
 const defaultDatabase: DatabaseShape = {
@@ -63,7 +67,8 @@ export class JsonStore {
         cwd: input.cwd,
         schedule: input.schedule,
         enabled: input.enabled,
-        effort: input.effort ?? null,
+        effort: input.effort ?? DEFAULT_CLAUDE_EFFORT,
+        model: input.model ?? DEFAULT_CLAUDE_MODEL,
         nextRunAt: input.enabled ? getNextRunAt(input.schedule, now)?.toISOString() ?? null : null,
         lastRunAt: null,
         createdAt: now.toISOString(),
@@ -90,6 +95,7 @@ export class JsonStore {
       if (input.schedule !== undefined) task.schedule = input.schedule;
       if (input.enabled !== undefined) task.enabled = input.enabled;
       if (input.effort !== undefined) task.effort = input.effort ?? null;
+      if (input.model !== undefined) task.model = input.model ?? null;
 
       const scheduleChanged = previousSchedule !== JSON.stringify(task.schedule);
       const enabledChanged = previousEnabled !== task.enabled;
@@ -131,6 +137,7 @@ export class JsonStore {
     prompt?: string;
     sessionId: string;
     effort: ClaudeEffort;
+    model: ClaudeModel;
     resumedFromExecutionId?: string | null;
   }): Promise<Execution> {
     return this.mutate(() => {
@@ -151,12 +158,14 @@ export class JsonStore {
         cwd: input.task.cwd,
         prompt: input.prompt ?? input.task.prompt,
         effort: input.effort,
+        model: input.model,
         error: null,
         processId: null,
         sessionId: input.sessionId,
         resumedFromExecutionId: input.resumedFromExecutionId ?? null,
         staleAt: null,
-        staleReason: null
+        staleReason: null,
+        cancelRequestedAt: null
       };
 
       this.database.executions.push(execution);
@@ -183,13 +192,32 @@ export class JsonStore {
     });
   }
 
+  async markExecutionCancelRequested(id: string): Promise<Execution | null> {
+    return this.mutate(() => {
+      const execution = this.getExecution(id);
+      if (!execution) return null;
+      if (execution.status !== "running") return execution;
+      if (execution.cancelRequestedAt) return execution;
+      execution.cancelRequestedAt = new Date().toISOString();
+      return execution;
+    });
+  }
+
   async markUntrackedRunningExecutions(activeExecutionIds: Set<string>, now = new Date()): Promise<Execution[]> {
     return this.mutate(() => {
       const staleAt = now.toISOString();
+      const graceCutoff = now.getTime() - CANCEL_GRACE_MS;
       const stale: Execution[] = [];
 
       for (const execution of this.database.executions) {
         if (execution.status !== "running" || activeExecutionIds.has(execution.id)) continue;
+
+        if (
+          execution.cancelRequestedAt &&
+          new Date(execution.cancelRequestedAt).getTime() >= graceCutoff
+        ) {
+          continue;
+        }
 
         const reason = execution.processId
           ? `Orphaned execution: the platform is no longer tracking process ${execution.processId}.`
@@ -235,6 +263,8 @@ export class JsonStore {
 
       if (!task.enabled || task.schedule.type === "manual") {
         task.nextRunAt = null;
+      } else if (task.schedule.type === "continuous") {
+        task.nextRunAt = new Date(now.getTime() + CONTINUOUS_MIN_GAP_MS).toISOString();
       } else {
         task.nextRunAt = getNextRunAt(task.schedule, now)?.toISOString() ?? null;
       }
@@ -296,7 +326,8 @@ function normalizeDatabase(input: Partial<DatabaseShape>): DatabaseShape {
 function normalizeTask(input: Task): Task {
   return {
     ...input,
-    effort: input.effort ?? null
+    effort: input.effort === undefined ? DEFAULT_CLAUDE_EFFORT : input.effort ?? null,
+    model: input.model === undefined ? DEFAULT_CLAUDE_MODEL : input.model ?? null
   };
 }
 
@@ -310,9 +341,11 @@ function normalizeExecution(input: Execution): Execution {
     processId: input.processId ?? null,
     sessionId,
     effort: input.effort ?? null,
+    model: input.model ?? null,
     resumedFromExecutionId: input.resumedFromExecutionId ?? null,
     staleAt: input.staleAt ?? null,
-    staleReason: input.staleReason ?? null
+    staleReason: input.staleReason ?? null,
+    cancelRequestedAt: input.cancelRequestedAt ?? null
   };
 }
 

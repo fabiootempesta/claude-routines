@@ -28,7 +28,8 @@ describe("execution recovery state", () => {
       trigger: "manual",
       command: ["claude", "-p"],
       sessionId: TEST_SESSION_ID,
-      effort: null
+      effort: null,
+      model: null
     });
 
     const originalLastOutputAt = execution.lastOutputAt;
@@ -48,7 +49,8 @@ describe("execution recovery state", () => {
       trigger: "manual",
       command: ["claude", "-p"],
       sessionId: TEST_SESSION_ID,
-      effort: "high"
+      effort: "high",
+      model: null
     });
 
     const stale = await store.markUntrackedRunningExecutions(new Set(), new Date("2026-05-09T18:30:00.000Z"));
@@ -68,7 +70,8 @@ describe("execution recovery state", () => {
       trigger: "manual",
       command: ["claude", "-p"],
       sessionId: TEST_SESSION_ID,
-      effort: null
+      effort: null,
+      model: null
     });
 
     const stale = await store.markUntrackedRunningExecutions(new Set([execution.id]), new Date("2026-05-09T18:30:00.000Z"));
@@ -85,6 +88,7 @@ function taskInput(): CreateTaskInput {
     cwd: tempDir,
     schedule: { type: "manual" },
     enabled: true,
-    effort: null
+    effort: null,
+    model: null
   };
 }

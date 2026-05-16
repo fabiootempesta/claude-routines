@@ -49,4 +49,48 @@ describe("buildClaudeCommand", () => {
       "--verbose"
     ]);
   });
+
+  it("includes --model when a model is selected, before --effort", () => {
+    const command = buildClaudeCommand(
+      "019e0dc0-bc6d-7c32-8520-2f1130559c89",
+      "max",
+      "opus"
+    );
+
+    expect(command.args).toEqual([
+      "-p",
+      "--dangerously-skip-permissions",
+      "--session-id",
+      "019e0dc0-bc6d-7c32-8520-2f1130559c89",
+      "--model",
+      "opus",
+      "--effort",
+      "max",
+      "--output-format",
+      "text",
+      "--verbose"
+    ]);
+  });
+
+  it("includes --model on resume commands too", () => {
+    const command = buildClaudeResumeCommand(
+      "019e0dc0-bc6d-7c32-8520-2f1130559c89",
+      "high",
+      "sonnet"
+    );
+
+    expect(command.args).toEqual([
+      "-p",
+      "--dangerously-skip-permissions",
+      "--resume",
+      "019e0dc0-bc6d-7c32-8520-2f1130559c89",
+      "--model",
+      "sonnet",
+      "--effort",
+      "high",
+      "--output-format",
+      "text",
+      "--verbose"
+    ]);
+  });
 });

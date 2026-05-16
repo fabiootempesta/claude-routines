@@ -22,6 +22,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  Square,
   Trash2,
   X,
   Zap
@@ -35,13 +36,19 @@ import {
 } from "./executionState";
 import type {
   ClaudeEffort,
+  ClaudeModel,
   CreateTaskInput,
   Execution,
   ExecutionStatus,
   Task,
   TaskSchedule
 } from "../server/types";
-import { claudeEffortOptions } from "../server/types";
+import {
+  claudeEffortOptions,
+  claudeModelOptions,
+  DEFAULT_CLAUDE_EFFORT,
+  DEFAULT_CLAUDE_MODEL
+} from "../server/types";
 
 type DraftTask = CreateTaskInput & { id?: string };
 
@@ -70,6 +77,7 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [filter, setFilter] = useState("");
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
@@ -346,6 +354,24 @@ export default function App() {
     }
   }
 
+  async function cancelExecution(executionId: string): Promise<void> {
+    setIsCancelling(true);
+    setError(null);
+    try {
+      await api(`/api/executions/${executionId}/cancel`, { method: "POST" });
+      await refresh();
+    } catch (requestError) {
+      setError(toMessage(requestError));
+    } finally {
+      setIsCancelling(false);
+    }
+  }
+
+  async function stopSelectedTask(): Promise<void> {
+    if (!selectedTaskRunningExecution) return;
+    await cancelExecution(selectedTaskRunningExecution.id);
+  }
+
   async function deleteTask(taskId: string): Promise<void> {
     setError(null);
     try {
@@ -573,21 +599,38 @@ export default function App() {
                     </button>
                   )
                 ) : null}
-                <button
-                  className="btn"
-                  type="button"
-                  disabled={!draft.id || isRunning || isSelectedTaskRunning}
-                  onClick={() => void runSelectedTask()}
-                  title="Run now (Ctrl/Cmd+Enter)"
-                >
-                  {isRunning || isSelectedTaskRunning ? (
-                    <Loader2 size={14} className="btn-spinner" />
-                  ) : (
-                    <Play size={14} />
-                  )}
-                  {isSelectedTaskRunning ? "Running" : "Run"}
-                  <span className="kbd">⌘↩</span>
-                </button>
+                {isSelectedTaskRunning ? (
+                  <button
+                    className="btn danger"
+                    type="button"
+                    disabled={isCancelling}
+                    onClick={() => void stopSelectedTask()}
+                    title="Stop the running execution"
+                  >
+                    {isCancelling ? (
+                      <Loader2 size={14} className="btn-spinner" />
+                    ) : (
+                      <Square size={14} />
+                    )}
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    className="btn"
+                    type="button"
+                    disabled={!draft.id || isRunning}
+                    onClick={() => void runSelectedTask()}
+                    title="Run now (Ctrl/Cmd+Enter)"
+                  >
+                    {isRunning ? (
+                      <Loader2 size={14} className="btn-spinner" />
+                    ) : (
+                      <Play size={14} />
+                    )}
+                    Run
+                    <span className="kbd">⌘↩</span>
+                  </button>
+                )}
                 <button
                   className="btn primary"
                   type="button"
@@ -639,6 +682,10 @@ export default function App() {
                 </span>
               </div>
               <div>
+                <span className="meta-label">Model</span>
+                <span className="meta-value">{modelLabel(draft.model)}</span>
+              </div>
+              <div>
                 <span className="meta-label">Effort</span>
                 <span className="meta-value">{draft.effort ? effortLabel(draft.effort) : "Default"}</span>
               </div>
@@ -686,6 +733,17 @@ export default function App() {
               <ScheduleBuilder
                 schedule={draft.schedule}
                 onChange={(schedule) => setDraft((current) => ({ ...current, schedule }))}
+              />
+            </div>
+
+            <div className="section">
+              <div className="section-head">
+                <span>Model</span>
+                <span className="hint">passed as <code>--model</code> to claude</span>
+              </div>
+              <ModelPicker
+                value={draft.model}
+                onChange={(model) => setDraft((current) => ({ ...current, model }))}
               />
             </div>
 
@@ -795,6 +853,8 @@ export default function App() {
           copyStatus={copyStatus}
           onContinue={() => void continueExecution()}
           isResuming={isResuming}
+          onCancel={() => void cancelExecution(openExecution.id)}
+          isCancelling={isCancelling}
         />
       )}
 
@@ -963,6 +1023,7 @@ function Ribbon({ ticks, nextLabel }: { ticks: RibbonTick[]; nextLabel: string |
 
 const scheduleModes: Array<{ id: TaskSchedule["type"]; label: string; ico: string }> = [
   { id: "manual", label: "Manual", ico: "⌘" },
+  { id: "continuous", label: "Continuous", ico: "∞" },
   { id: "interval", label: "Interval", ico: "↻" },
   { id: "daily", label: "Daily", ico: "☀" },
   { id: "weekly", label: "Weekly", ico: "▦" },
@@ -1001,6 +1062,11 @@ function ScheduleBuilder(props: {
           {schedule.type === "manual" && (
             <span className="phrase">
               only when you press <span className="accent">Run</span>.
+            </span>
+          )}
+          {schedule.type === "continuous" && (
+            <span className="phrase">
+              <span className="accent">forever</span> — the next run starts as soon as the current one finishes.
             </span>
           )}
           {schedule.type === "interval" && (
@@ -1146,6 +1212,30 @@ function EffortPicker(props: { value: ClaudeEffort; onChange: (value: ClaudeEffo
   );
 }
 
+/* ----------------------------- model picker ----------------------------- */
+
+function ModelPicker(props: { value: ClaudeModel; onChange: (value: ClaudeModel) => void }) {
+  const opts: Array<{ id: ClaudeModel; label: string }> = [
+    { id: null, label: "Default" },
+    ...claudeModelOptions
+  ];
+  return (
+    <div className="model-row">
+      {opts.map((o) => (
+        <button
+          key={String(o.id ?? "default")}
+          type="button"
+          className={`model-opt ${props.value === o.id ? "active" : ""}`}
+          onClick={() => props.onChange(o.id)}
+          aria-pressed={props.value === o.id}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /* ----------------------------- run row + modal ----------------------------- */
 
 function RunRow({ execution, onOpen }: { execution: Execution; onOpen: () => void }) {
@@ -1154,9 +1244,11 @@ function RunRow({ execution, onOpen }: { execution: Execution; onOpen: () => voi
       ? "success"
       : execution.status === "failed"
         ? "failed"
-        : execution.status === "stale"
-          ? "stale"
-          : "running";
+        : execution.status === "cancelled"
+          ? "cancelled"
+          : execution.status === "stale"
+            ? "stale"
+            : "running";
 
   const meta =
     execution.status === "running"
@@ -1165,7 +1257,9 @@ function RunRow({ execution, onOpen }: { execution: Execution; onOpen: () => voi
         ? "succeeded"
         : execution.status === "failed"
           ? "failed"
-          : "stale";
+          : execution.status === "cancelled"
+            ? "cancelled"
+            : "stale";
 
   return (
     <div
@@ -1198,17 +1292,22 @@ function ExecutionModal(props: {
   copyStatus: "idle" | "copied";
   onContinue: () => void;
   isResuming: boolean;
+  onCancel: () => void;
+  isCancelling: boolean;
 }) {
-  const { execution, taskTitle, onClose, onCopy, copyStatus, onContinue, isResuming } = props;
+  const { execution, taskTitle, onClose, onCopy, copyStatus, onContinue, isResuming, onCancel, isCancelling } = props;
   const continuable = isContinuableExecution(execution);
+  const isRunning = execution.status === "running";
   const orbClass =
     execution.status === "success"
       ? "success"
       : execution.status === "failed"
         ? "failed"
-        : execution.status === "stale"
-          ? "stale"
-          : "running";
+        : execution.status === "cancelled"
+          ? "cancelled"
+          : execution.status === "stale"
+            ? "stale"
+            : "running";
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -1234,6 +1333,18 @@ function ExecutionModal(props: {
             </div>
           </div>
           <div className="modal-actions">
+            {isRunning && (
+              <button
+                className="btn danger"
+                type="button"
+                disabled={isCancelling || Boolean(execution.cancelRequestedAt)}
+                onClick={onCancel}
+                title="Stop this execution"
+              >
+                {isCancelling ? <Loader2 size={14} className="btn-spinner" /> : <Square size={14} />}
+                {execution.cancelRequestedAt ? "Stopping…" : "Stop"}
+              </button>
+            )}
             {continuable && (
               <button
                 className="btn primary"
@@ -1316,7 +1427,8 @@ function createEmptyDraft(cwd: string): DraftTask {
     prompt: "# Goal\n\n",
     cwd,
     enabled: true,
-    effort: null,
+    effort: DEFAULT_CLAUDE_EFFORT,
+    model: DEFAULT_CLAUDE_MODEL,
     schedule: { type: "manual" }
   };
 }
@@ -1329,6 +1441,7 @@ function taskToDraft(task: Task): DraftTask {
     cwd: task.cwd,
     enabled: task.enabled,
     effort: task.effort ?? null,
+    model: task.model ?? null,
     schedule: task.schedule
   };
 }
@@ -1339,6 +1452,7 @@ function defaultSchedule(type: TaskSchedule["type"]): TaskSchedule {
   if (type === "daily") return { type, time: "09:00" };
   if (type === "weekly") return { type, dayOfWeek: 1, time: "09:00" };
   if (type === "once") return { type, runAt: toDatetimeLocal(new Date(Date.now() + 60 * 60_000)) };
+  if (type === "continuous") return { type };
   return { type, expression: "0 9 * * *" };
 }
 
@@ -1349,8 +1463,14 @@ function normalizeDraft(draft: DraftTask): CreateTaskInput {
     cwd: draft.cwd,
     schedule: draft.schedule,
     enabled: draft.enabled,
-    effort: draft.effort ?? null
+    effort: draft.effort ?? null,
+    model: draft.model ?? null
   };
+}
+
+function modelLabel(model: ClaudeModel): string {
+  if (!model) return "Default";
+  return claudeModelOptions.find((option) => option.id === model)?.label ?? model;
 }
 
 function fingerprintDraft(draft: DraftTask): string {
@@ -1366,6 +1486,8 @@ function shortSchedule(schedule: TaskSchedule): string {
   switch (schedule.type) {
     case "manual":
       return "Manual";
+    case "continuous":
+      return "Continuous";
     case "interval":
       return `Every ${schedule.everyMinutes}m`;
     case "daily":
@@ -1393,6 +1515,7 @@ function humanizeCron(expression: string): string {
 function computeNextRunPreview(schedule: TaskSchedule, count: number): string[] {
   const now = Date.now();
   if (schedule.type === "manual") return [];
+  if (schedule.type === "continuous") return [];
   if (schedule.type === "once") {
     if (!schedule.runAt) return ["set time"];
     const date = new Date(schedule.runAt);
@@ -1502,6 +1625,7 @@ function nextRunsForTask(task: Task, count: number): Date[] {
   const now = Date.now();
   const schedule = task.schedule;
   if (schedule.type === "manual") return items;
+  if (schedule.type === "continuous") return items;
   if (schedule.type === "once") {
     const d = new Date(schedule.runAt);
     if (d.getTime() > now) items.push(d);

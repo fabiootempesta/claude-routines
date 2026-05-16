@@ -3,7 +3,8 @@ import type { Request, Response, NextFunction } from "express";
 import os from "node:os";
 import { z } from "zod";
 import { assertDirectory, JsonStore } from "./store.js";
-import type { Scheduler } from "./scheduler.js";
+import { HttpError, type Scheduler } from "./scheduler.js";
+import { DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL } from "./types.js";
 
 const scheduleSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("manual") }),
@@ -15,12 +16,17 @@ const scheduleSchema = z.discriminatedUnion("type", [
     dayOfWeek: z.coerce.number().int().min(0).max(6),
     time: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/)
   }),
-  z.object({ type: z.literal("cron"), expression: z.string().min(3) })
+  z.object({ type: z.literal("cron"), expression: z.string().min(3) }),
+  z.object({ type: z.literal("continuous") })
 ]);
 
 const effortSchema = z
   .union([z.enum(["low", "medium", "high", "xhigh", "max"]), z.null()])
-  .default(null);
+  .default(DEFAULT_CLAUDE_EFFORT);
+
+const modelSchema = z
+  .union([z.string().min(1), z.null()])
+  .default(DEFAULT_CLAUDE_MODEL);
 
 const taskCreateSchema = z.object({
   title: z.string().trim().min(1),
@@ -28,6 +34,7 @@ const taskCreateSchema = z.object({
   cwd: z.string().trim().min(1),
   enabled: z.boolean().default(true),
   effort: effortSchema,
+  model: modelSchema,
   schedule: scheduleSchema
 });
 
@@ -120,9 +127,26 @@ export function createApiRouter(store: JsonStore, scheduler: Scheduler): Router 
     })
   );
 
+  router.post(
+    "/executions/:id/cancel",
+    asyncHandler(async (request, response) => {
+      const result = await scheduler.cancelExecution(request.params.id);
+      if (result.status === "already_finished") {
+        response.status(409).json({ error: "Execution already finished." });
+        return;
+      }
+      response.status(202).json({ status: "cancelling" });
+    })
+  );
+
   router.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
     if (error instanceof z.ZodError) {
       response.status(400).json({ error: "Invalid data.", details: error.flatten() });
+      return;
+    }
+
+    if (error instanceof HttpError) {
+      response.status(error.status).json({ error: error.message });
       return;
     }
 

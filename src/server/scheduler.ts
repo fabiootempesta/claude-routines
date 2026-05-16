@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { buildClaudeCommand, buildClaudeResumeCommand, formatCommand, runClaudeCommand } from "./runner.js";
+import type { ChildProcess } from "node:child_process";
+import {
+  CANCEL_SIGKILL_AFTER_MS,
+  SCHEDULER_TICK_MS
+} from "./constants.js";
+import {
+  buildClaudeCommand,
+  buildClaudeResumeCommand,
+  formatCommand,
+  runClaudeCommand
+} from "./runner.js";
 import type { JsonStore } from "./store.js";
 import type { Execution, ExecutionTrigger, Task } from "./types.js";
 
@@ -7,11 +17,14 @@ export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
   private readonly runningTaskIds = new Set<string>();
   private readonly runningExecutionIds = new Set<string>();
+  private readonly runningProcesses = new Map<string, ChildProcess>();
+  private readonly cancelledExecutionIds = new Set<string>();
+  private readonly sigkillTimers = new Map<string, NodeJS.Timeout>();
   private tickInProgress = false;
 
   constructor(
     private readonly store: JsonStore,
-    private readonly intervalMs = 5_000
+    private readonly intervalMs = SCHEDULER_TICK_MS
   ) {}
 
   start(): void {
@@ -51,12 +64,44 @@ export class Scheduler {
     }
 
     const effort = task.effort ?? null;
+    const model = task.model ?? null;
     return this.launchTask(task, "resume", {
       sessionId: staleExecution.sessionId,
-      command: buildClaudeResumeCommand(staleExecution.sessionId, effort),
+      command: buildClaudeResumeCommand(staleExecution.sessionId, effort, model),
       prompt: buildResumePrompt(task, staleExecution),
       resumedFromExecutionId: staleExecution.id
     });
+  }
+
+  async cancelExecution(executionId: string): Promise<{ status: "cancelling" | "already_finished" }> {
+    const execution = this.store.getExecution(executionId);
+    if (!execution) {
+      throw new HttpError(404, "Execution not found.");
+    }
+    if (execution.status !== "running") {
+      return { status: "already_finished" };
+    }
+
+    await this.store.markExecutionCancelRequested(executionId);
+    this.cancelledExecutionIds.add(executionId);
+
+    const child = this.runningProcesses.get(executionId);
+    if (!child) {
+      return { status: "cancelling" };
+    }
+
+    sendSignal(child, "SIGTERM");
+
+    const existingTimer = this.sigkillTimers.get(executionId);
+    if (existingTimer) clearTimeout(existingTimer);
+    const timer = setTimeout(() => {
+      const stillRunning = this.runningProcesses.get(executionId);
+      if (stillRunning) sendSignal(stillRunning, "SIGKILL");
+      this.sigkillTimers.delete(executionId);
+    }, CANCEL_SIGKILL_AFTER_MS);
+    this.sigkillTimers.set(executionId, timer);
+
+    return { status: "cancelling" };
   }
 
   private async tick(): Promise<void> {
@@ -94,7 +139,8 @@ export class Scheduler {
     this.runningTaskIds.add(task.id);
     const sessionId = options.sessionId ?? randomUUID();
     const effort = task.effort ?? null;
-    const command = options.command ?? buildClaudeCommand(sessionId, effort);
+    const model = task.model ?? null;
+    const command = options.command ?? buildClaudeCommand(sessionId, effort, model);
     const execution = await this.store.createExecution({
       task,
       trigger,
@@ -102,6 +148,7 @@ export class Scheduler {
       prompt: options.prompt,
       sessionId,
       effort,
+      model,
       resumedFromExecutionId: options.resumedFromExecutionId
     });
     this.runningExecutionIds.add(execution.id);
@@ -110,21 +157,40 @@ export class Scheduler {
     return execution;
   }
 
-  private async executeTask(task: Task, executionId: string, command: ReturnType<typeof buildClaudeCommand>, prompt: string): Promise<void> {
+  private async executeTask(
+    task: Task,
+    executionId: string,
+    command: ReturnType<typeof buildClaudeCommand>,
+    prompt: string
+  ): Promise<void> {
     try {
       const result = await runClaudeCommand(command, task.cwd, prompt, {
-        onStart: (pid) => this.store.setExecutionProcessId(executionId, pid),
+        onStart: (child) => {
+          this.runningProcesses.set(executionId, child);
+          if (child.pid) {
+            void this.store.setExecutionProcessId(executionId, child.pid);
+          }
+        },
         onStdout: (chunk) => this.store.appendExecutionOutput(executionId, "stdout", chunk),
         onStderr: (chunk) => this.store.appendExecutionOutput(executionId, "stderr", chunk)
       });
 
+      const wasCancelled = this.cancelledExecutionIds.has(executionId);
+      const status = wasCancelled
+        ? "cancelled"
+        : result.exitCode === 0
+          ? "success"
+          : "failed";
+      const error = wasCancelled ? "Execution cancelled by user." : null;
       await this.store.finishExecution(executionId, {
-        status: result.exitCode === 0 ? "success" : "failed",
-        exitCode: result.exitCode
+        status,
+        exitCode: result.exitCode,
+        error
       });
     } catch (error) {
+      const wasCancelled = this.cancelledExecutionIds.has(executionId);
       await this.store.finishExecution(executionId, {
-        status: "failed",
+        status: wasCancelled ? "cancelled" : "failed",
         exitCode: null,
         error: error instanceof Error ? error.message : String(error)
       });
@@ -132,6 +198,13 @@ export class Scheduler {
       await this.store.finishTaskRun(task.id);
       this.runningTaskIds.delete(task.id);
       this.runningExecutionIds.delete(executionId);
+      this.runningProcesses.delete(executionId);
+      this.cancelledExecutionIds.delete(executionId);
+      const timer = this.sigkillTimers.get(executionId);
+      if (timer) {
+        clearTimeout(timer);
+        this.sigkillTimers.delete(executionId);
+      }
     }
   }
 
@@ -139,6 +212,25 @@ export class Scheduler {
     const staleExecutions = await this.store.markUntrackedRunningExecutions(this.runningExecutionIds);
     for (const execution of staleExecutions) {
       await this.store.finishTaskRun(execution.taskId);
+    }
+  }
+}
+
+export class HttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+function sendSignal(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!child.pid) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // process already gone — nothing to do.
     }
   }
 }

@@ -55,12 +55,14 @@ function execution(overrides: Partial<Execution>): Execution {
     cwd: "/tmp/claude-routines-fixture",
     prompt: "Run",
     effort: null,
+    model: null,
     error: null,
     processId: null,
     sessionId: "019e0dc0-bc6d-7c32-8520-2f1130559c89",
     resumedFromExecutionId: null,
     staleAt: null,
     staleReason: null,
+    cancelRequestedAt: null,
     ...overrides
   };
 }

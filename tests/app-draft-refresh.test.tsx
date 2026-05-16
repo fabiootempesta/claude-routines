@@ -13,6 +13,7 @@ const task: Task = {
   schedule: { type: "manual" },
   enabled: true,
   effort: null,
+  model: null,
   nextRunAt: null,
   lastRunAt: null,
   createdAt: "2026-05-09T12:00:00.000Z",

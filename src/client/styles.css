@@ -386,6 +386,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .status-orb.failed { background: var(--danger); }
 .status-orb.success { background: var(--ok); }
 .status-orb.stale { background: var(--warn); }
+.status-orb.cancelled { background: var(--muted-2); }
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 var(--lime-glow); }
   70% { box-shadow: 0 0 0 8px transparent; }
@@ -444,6 +445,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .sparkline span.success { background: var(--ok); }
 .sparkline span.failed { background: var(--danger); }
 .sparkline span.stale { background: var(--warn); }
+.sparkline span.cancelled { background: var(--muted-2); }
 .sparkline span.running { background: var(--lime); animation: bar 1.4s ease-in-out infinite; }
 @keyframes bar {
   0%,100% { opacity: 0.4; }
@@ -860,6 +862,30 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .effort-opt .bars i {
   width: 3px; border-radius: 1px;
   background: currentColor; opacity: 0.4;
+}
+
+/* model selector */
+.model-row {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap;
+}
+.model-opt {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--font-mono);
+  transition: all 140ms;
+}
+.model-opt:hover { border-color: var(--line-2); color: var(--ink-2); }
+.model-opt.active {
+  background: var(--lime-soft);
+  border-color: var(--lime-2);
+  color: var(--lime);
 }
 
 /* prompt editor */
