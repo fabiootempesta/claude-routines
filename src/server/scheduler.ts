@@ -73,6 +73,30 @@ export class Scheduler {
     });
   }
 
+  async messageExecution(executionId: string, message: string): Promise<Execution> {
+    const sourceExecution = this.store.getExecution(executionId);
+    if (!sourceExecution) {
+      throw new HttpError(404, "Execution not found.");
+    }
+
+    const task = this.store.getTask(sourceExecution.taskId);
+    if (!task) {
+      throw new HttpError(404, "Execution task not found.");
+    }
+
+    const prompt = message.trim();
+    if (!prompt) {
+      throw new HttpError(400, "Message is required.");
+    }
+
+    return this.launchTask(task, "message", {
+      sessionId: sourceExecution.sessionId,
+      command: buildClaudeResumeCommand(sourceExecution.sessionId, task.effort ?? null, task.model ?? null),
+      prompt,
+      resumedFromExecutionId: sourceExecution.id
+    });
+  }
+
   async cancelExecution(executionId: string): Promise<{ status: "cancelling" | "already_finished" }> {
     const execution = this.store.getExecution(executionId);
     if (!execution) {
@@ -136,22 +160,32 @@ export class Scheduler {
       throw new Error("This task is already running.");
     }
 
+    const executionId = randomUUID();
     this.runningTaskIds.add(task.id);
+    this.runningExecutionIds.add(executionId);
     const sessionId = options.sessionId ?? randomUUID();
     const effort = task.effort ?? null;
     const model = task.model ?? null;
     const command = options.command ?? buildClaudeCommand(sessionId, effort, model);
-    const execution = await this.store.createExecution({
-      task,
-      trigger,
-      command: formatCommand(command),
-      prompt: options.prompt,
-      sessionId,
-      effort,
-      model,
-      resumedFromExecutionId: options.resumedFromExecutionId
-    });
-    this.runningExecutionIds.add(execution.id);
+
+    let execution: Execution;
+    try {
+      execution = await this.store.createExecution({
+        id: executionId,
+        task,
+        trigger,
+        command: formatCommand(command),
+        prompt: options.prompt,
+        sessionId,
+        effort,
+        model,
+        resumedFromExecutionId: options.resumedFromExecutionId
+      });
+    } catch (error) {
+      this.runningTaskIds.delete(task.id);
+      this.runningExecutionIds.delete(executionId);
+      throw error;
+    }
 
     void this.executeTask(task, execution.id, command, options.prompt ?? task.prompt);
     return execution;

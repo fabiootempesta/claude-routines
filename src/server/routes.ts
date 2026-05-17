@@ -17,7 +17,7 @@ const scheduleSchema = z.discriminatedUnion("type", [
     time: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/)
   }),
   z.object({ type: z.literal("cron"), expression: z.string().min(3) }),
-  z.object({ type: z.literal("continuous") })
+  z.object({ type: z.literal("continuous"), stopAt: z.string().min(1).nullable().optional() })
 ]);
 
 const effortSchema = z
@@ -39,6 +39,10 @@ const taskCreateSchema = z.object({
 });
 
 const taskUpdateSchema = taskCreateSchema.partial();
+
+const executionMessageSchema = z.object({
+  message: z.string().trim().min(1).max(100_000)
+});
 
 export function createApiRouter(store: JsonStore, scheduler: Scheduler): Router {
   const router = Router();
@@ -123,6 +127,15 @@ export function createApiRouter(store: JsonStore, scheduler: Scheduler): Router 
     "/executions/:id/resume",
     asyncHandler(async (request, response) => {
       const execution = await scheduler.resumeExecution(request.params.id);
+      response.status(202).json({ execution });
+    })
+  );
+
+  router.post(
+    "/executions/:id/message",
+    asyncHandler(async (request, response) => {
+      const payload = executionMessageSchema.parse(request.body);
+      const execution = await scheduler.messageExecution(request.params.id, payload.message);
       response.status(202).json({ execution });
     })
   );
